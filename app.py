@@ -126,7 +126,7 @@ def render_interactive_selection(raw_data, step, key_prefix="main"):
         title="Full Time Series",
         xaxis_title="Index", 
         yaxis_title="Amplitude",
-        height=500 if key_prefix != "main" else 400,
+        height=400, # Matches override_height
         margin=dict(l=0, r=0, t=30, b=0),
         template="plotly_white",
         dragmode='select', # Default to selection tool
@@ -135,7 +135,15 @@ def render_interactive_selection(raw_data, step, key_prefix="main"):
     
     # Use dynamic key to force remount on manual update, clearing stale plot selection state
     plot_key = f"{key_prefix}_plot_select_{st.session_state.plot_refresh_id}"
-    selected_points = plotly_events(fig_main, select_event=True, key=plot_key)
+    
+    # Explicitly set override_height and override_width to ensure rendering on cloud platforms
+    selected_points = plotly_events(
+        fig_main, 
+        select_event=True, 
+        key=plot_key,
+        override_height=400,
+        override_width="100%"
+    )
     
     if selected_points:
         # Extract X values from selected points
@@ -271,7 +279,7 @@ if uploaded_file is not None:
                 # Selected data
                 fig_high.add_trace(go.Scattergl(x=np.arange(start_val, end_val), y=section, mode='lines', line=dict(color='red'), name='CW'))
                 fig_high.update_layout(height=300, margin=dict(l=0,r=0,t=30,b=0), title="Critical Window",xaxis_title="Index", yaxis_title="Amplitude", template="plotly_white")
-                st.plotly_chart(fig_high, use_container_width=True)
+                st.plotly_chart(fig_high, width="stretch")
                 
                 col_s1, col_s2 = st.columns(2)
                 
@@ -290,7 +298,7 @@ if uploaded_file is not None:
                         fig_roll.update_layout(height=400, showlegend=False, template="plotly_white")
                         fig_roll.update_yaxes(title_text="Mean", row=1, col=1)
                         fig_roll.update_yaxes(title_text="Std Dev", row=2, col=1)
-                        st.plotly_chart(fig_roll, use_container_width=True)
+                        st.plotly_chart(fig_roll, width="stretch")
                     else:
                         st.warning("Selection too short for rolling stats.")
 
@@ -308,7 +316,7 @@ if uploaded_file is not None:
                         height=400,
                         template="plotly_white"
                     )
-                    st.plotly_chart(fig_ac, use_container_width=True)
+                    st.plotly_chart(fig_ac, width="stretch")
 
             # --- Tab 2: Histogram ---
             with tab2:
@@ -372,7 +380,7 @@ if uploaded_file is not None:
                             st.session_state.phi_0 = selected[0]['x']
                             st.rerun()
                     else:
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                        st.plotly_chart(fig_hist, width="stretch")
 
             # --- Tab 3: Laminar Analysis ---
             with tab3:
@@ -479,7 +487,7 @@ if uploaded_file is not None:
                                             template="plotly_white"
                                         )
                                         
-                                        st.plotly_chart(fig_fit, use_container_width=True)
+                                        st.plotly_chart(fig_fit, width="stretch")
                                             
                                     except Exception as e:
                                         st.error(f"Fit failed: {e}")
@@ -499,7 +507,7 @@ if uploaded_file is not None:
                                         mode='lines+markers', name='p2 (Exponent)'
                                     ))
                                     fig_sum.update_layout(title="Exponent p<sub>2</sub> Stability", xaxis_title="φ<sub>l</sub>", yaxis_title="p<sub>2</sub>", template="plotly_white")
-                                    st.plotly_chart(fig_sum, use_container_width=True)
+                                    st.plotly_chart(fig_sum, width="stretch")
                                 with col_sum2:
                                     st.dataframe(res_df[['phi_l', 'p2', 'p3', 'R2']].style.format("{:.4f}"))
                                     
