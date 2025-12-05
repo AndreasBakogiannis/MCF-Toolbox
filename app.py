@@ -381,9 +381,9 @@ if uploaded_file is not None:
                 with st.form("fit_form"):
                     c1, c2 = st.columns(2)
                     with c1:
-                        phi_l_txt = st.text_input("$\phi_l$ Values (space separated)", value="", placeholder="e.g. 0.5 1.0 1.5")
+                        phi_l_txt = st.text_input(r"$\phi_l$ Values (space separated)", value="", placeholder="e.g. 0.5 1.0 1.5")
                     with c2:
-                        lmax = st.number_input("Max Length ($L_{\max}$) for fitting", value=0, help="0 to include all points")
+                        lmax = st.number_input(r"Max Length ($L_{\max}$) for fitting", value=0, help="0 to include all points")
                     
                     submitted = st.form_submit_button("Run Analysis")
                 
@@ -394,7 +394,7 @@ if uploaded_file is not None:
                             st.warning("Please enter at least one phi_l value.")
                         else:
                             results = []
-                            res_tabs = st.tabs([f"$\phi_l$={p}" for p in phi_l_vals])
+                            res_tabs = st.tabs([rf"$\phi_l$={p}" for p in phi_l_vals])
                             
                             for i, phi_l in enumerate(phi_l_vals):
                                 with res_tabs[i]:
