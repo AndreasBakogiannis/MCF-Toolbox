@@ -69,29 +69,64 @@ def parse_uploaded_file(file_content, filename, col_idx):
         file_buffer = io.BytesIO(file_content)
         preview = None
         
+        # Try different reading strategies
+        df = None
+        
+        # Strategy 1: Numpy loadtxt (good for simple numeric txt files)
         if filename.endswith('.txt'):
-            raw_data = np.loadtxt(file_buffer)
-        else:
-            # Try reading as CSV
             try:
-                df = pd.read_csv(file_buffer, header=None, sep=',')
-                # Check if first row is header (strings)
-                if df.iloc[0].apply(lambda x: isinstance(x, str)).any():
-                     file_buffer.seek(0)
-                     df = pd.read_csv(file_buffer, sep=',')
+                # Default loadtxt
+                raw_data = np.loadtxt(file_buffer)
+                if raw_data.ndim == 1:
+                    # If it's 1D, we are good
+                    return raw_data, None, pd.DataFrame(raw_data[:5], columns=["Value"])
+                elif raw_data.ndim == 2:
+                    # If it's 2D, treat it like a dataframe to select column
+                    df = pd.DataFrame(raw_data)
             except:
+                # Reset buffer if numpy failed
                 file_buffer.seek(0)
-                df = pd.read_csv(file_buffer, delim_whitespace=True, header=None)
+        
+        # Strategy 2: Pandas read_csv with auto detection (handles csv, txt, dat)
+        if df is None:
+            try:
+                # sep=None with engine='python' detects comma, tab, space, etc.
+                df = pd.read_csv(file_buffer, sep=None, engine='python', header=None)
+                
+                # Check if first row looks like a header (mostly strings)
+                # We do this by trying to convert the first row to numeric.
+                # If it fails, we assume it's a header and reload.
+                try:
+                    # Check the column of interest in the first row
+                    if col_idx < df.shape[1]:
+                        pd.to_numeric(df.iloc[0, col_idx])
+                    else:
+                        # If column index is out of bounds for the first row, it might be a messy file
+                        pass 
+                except (ValueError, TypeError):
+                    # First row is not numeric, likely a header
+                    file_buffer.seek(0)
+                    df = pd.read_csv(file_buffer, sep=None, engine='python')
+            except:
+                # Last resort: fixed width or whitespace
+                file_buffer.seek(0)
+                try:
+                    df = pd.read_csv(file_buffer, delim_whitespace=True, header=None)
+                except Exception as e:
+                    return None, f"Failed to parse file: {e}", None
+
+        # Extract column
+        if isinstance(df, pd.DataFrame):
+            preview = df.head()
+            max_col = df.shape[1] - 1
+            if col_idx > max_col:
+                return None, f"Column index {col_idx} out of bounds (max {max_col}).", None
             
-            # Extract column
-            if isinstance(df, pd.DataFrame):
-                preview = df.head()
-                max_col = df.shape[1] - 1
-                if col_idx > max_col:
-                    return None, f"Column index {col_idx} out of bounds (max {max_col}).", None
-                raw_data = df.iloc[:, col_idx].values
-            else:
-                 return None, "Failed to parse dataframe.", None
+            # Coerce to numeric, handling potential headers or bad data
+            # This handles cases where data might be mixed strings/numbers
+            raw_data = pd.to_numeric(df.iloc[:, col_idx], errors='coerce').dropna().values
+        else:
+             return None, "Failed to parse dataframe.", None
 
         return raw_data.flatten(), None, preview
     except Exception as e:
