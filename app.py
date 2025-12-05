@@ -69,64 +69,29 @@ def parse_uploaded_file(file_content, filename, col_idx):
         file_buffer = io.BytesIO(file_content)
         preview = None
         
-        # Try different reading strategies
-        df = None
-        
-        # Strategy 1: Numpy loadtxt (good for simple numeric txt files)
         if filename.endswith('.txt'):
-            try:
-                # Default loadtxt
-                raw_data = np.loadtxt(file_buffer)
-                if raw_data.ndim == 1:
-                    # If it's 1D, we are good
-                    return raw_data, None, pd.DataFrame(raw_data[:5], columns=["Value"])
-                elif raw_data.ndim == 2:
-                    # If it's 2D, treat it like a dataframe to select column
-                    df = pd.DataFrame(raw_data)
-            except:
-                # Reset buffer if numpy failed
-                file_buffer.seek(0)
-        
-        # Strategy 2: Pandas read_csv with auto detection (handles csv, txt, dat)
-        if df is None:
-            try:
-                # sep=None with engine='python' detects comma, tab, space, etc.
-                df = pd.read_csv(file_buffer, sep=None, engine='python', header=None)
-                
-                # Check if first row looks like a header (mostly strings)
-                # We do this by trying to convert the first row to numeric.
-                # If it fails, we assume it's a header and reload.
-                try:
-                    # Check the column of interest in the first row
-                    if col_idx < df.shape[1]:
-                        pd.to_numeric(df.iloc[0, col_idx])
-                    else:
-                        # If column index is out of bounds for the first row, it might be a messy file
-                        pass 
-                except (ValueError, TypeError):
-                    # First row is not numeric, likely a header
-                    file_buffer.seek(0)
-                    df = pd.read_csv(file_buffer, sep=None, engine='python')
-            except:
-                # Last resort: fixed width or whitespace
-                file_buffer.seek(0)
-                try:
-                    df = pd.read_csv(file_buffer, delim_whitespace=True, header=None)
-                except Exception as e:
-                    return None, f"Failed to parse file: {e}", None
-
-        # Extract column
-        if isinstance(df, pd.DataFrame):
-            preview = df.head()
-            max_col = df.shape[1] - 1
-            if col_idx > max_col:
-                return None, f"Column index {col_idx} out of bounds (max {max_col}).", None
-            
-            # Coerce to numeric, handling potential headers or bad data
-            # This handles cases where data might be mixed strings/numbers
-            raw_data = pd.to_numeric(df.iloc[:, col_idx], errors='coerce').dropna().values
+            raw_data = np.loadtxt(file_buffer)
         else:
-             return None, "Failed to parse dataframe.", None
+            # Try reading as CSV
+            try:
+                df = pd.read_csv(file_buffer, header=None, sep=',')
+                # Check if first row is header (strings)
+                if df.iloc[0].apply(lambda x: isinstance(x, str)).any():
+                     file_buffer.seek(0)
+                     df = pd.read_csv(file_buffer, sep=',')
+            except:
+                file_buffer.seek(0)
+                df = pd.read_csv(file_buffer, delim_whitespace=True, header=None)
+            
+            # Extract column
+            if isinstance(df, pd.DataFrame):
+                preview = df.head()
+                max_col = df.shape[1] - 1
+                if col_idx > max_col:
+                    return None, f"Column index {col_idx} out of bounds (max {max_col}).", None
+                raw_data = df.iloc[:, col_idx].values
+            else:
+                 return None, "Failed to parse dataframe.", None
 
         return raw_data.flatten(), None, preview
     except Exception as e:
@@ -161,7 +126,7 @@ def render_interactive_selection(raw_data, step, key_prefix="main"):
         title="Full Time Series",
         xaxis_title="Index", 
         yaxis_title="Amplitude",
-        height=400, # Matches override_height
+        height=500 if key_prefix != "main" else 400,
         margin=dict(l=0, r=0, t=30, b=0),
         template="plotly_white",
         dragmode='select', # Default to selection tool
@@ -170,15 +135,7 @@ def render_interactive_selection(raw_data, step, key_prefix="main"):
     
     # Use dynamic key to force remount on manual update, clearing stale plot selection state
     plot_key = f"{key_prefix}_plot_select_{st.session_state.plot_refresh_id}"
-    
-    # Explicitly set override_height and override_width to ensure rendering on cloud platforms
-    selected_points = plotly_events(
-        fig_main, 
-        select_event=True, 
-        key=plot_key,
-        override_height=400,
-        override_width="100%"
-    )
+    selected_points = plotly_events(fig_main, select_event=True, key=plot_key)
     
     if selected_points:
         # Extract X values from selected points
@@ -314,7 +271,7 @@ if uploaded_file is not None:
                 # Selected data
                 fig_high.add_trace(go.Scattergl(x=np.arange(start_val, end_val), y=section, mode='lines', line=dict(color='red'), name='CW'))
                 fig_high.update_layout(height=300, margin=dict(l=0,r=0,t=30,b=0), title="Critical Window",xaxis_title="Index", yaxis_title="Amplitude", template="plotly_white")
-                st.plotly_chart(fig_high, width="stretch")
+                st.plotly_chart(fig_high, use_container_width=True)
                 
                 col_s1, col_s2 = st.columns(2)
                 
@@ -333,7 +290,7 @@ if uploaded_file is not None:
                         fig_roll.update_layout(height=400, showlegend=False, template="plotly_white")
                         fig_roll.update_yaxes(title_text="Mean", row=1, col=1)
                         fig_roll.update_yaxes(title_text="Std Dev", row=2, col=1)
-                        st.plotly_chart(fig_roll, width="stretch")
+                        st.plotly_chart(fig_roll, use_container_width=True)
                     else:
                         st.warning("Selection too short for rolling stats.")
 
@@ -351,7 +308,7 @@ if uploaded_file is not None:
                         height=400,
                         template="plotly_white"
                     )
-                    st.plotly_chart(fig_ac, width="stretch")
+                    st.plotly_chart(fig_ac, use_container_width=True)
 
             # --- Tab 2: Histogram ---
             with tab2:
@@ -415,7 +372,7 @@ if uploaded_file is not None:
                             st.session_state.phi_0 = selected[0]['x']
                             st.rerun()
                     else:
-                        st.plotly_chart(fig_hist, width="stretch")
+                        st.plotly_chart(fig_hist, use_container_width=True)
 
             # --- Tab 3: Laminar Analysis ---
             with tab3:
@@ -522,7 +479,7 @@ if uploaded_file is not None:
                                             template="plotly_white"
                                         )
                                         
-                                        st.plotly_chart(fig_fit, width="stretch")
+                                        st.plotly_chart(fig_fit, use_container_width=True)
                                             
                                     except Exception as e:
                                         st.error(f"Fit failed: {e}")
@@ -542,7 +499,7 @@ if uploaded_file is not None:
                                         mode='lines+markers', name='p2 (Exponent)'
                                     ))
                                     fig_sum.update_layout(title="Exponent p<sub>2</sub> Stability", xaxis_title="φ<sub>l</sub>", yaxis_title="p<sub>2</sub>", template="plotly_white")
-                                    st.plotly_chart(fig_sum, width="stretch")
+                                    st.plotly_chart(fig_sum, use_container_width=True)
                                 with col_sum2:
                                     st.dataframe(res_df[['phi_l', 'p2', 'p3', 'R2']].style.format("{:.4f}"))
                                     
