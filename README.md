@@ -15,8 +15,8 @@ This repository contains a **Streamlit** application for analyzing time series d
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/YOUR_USERNAME/mcf-toolbox.git
-    cd mcf-toolbox
+    git clone https://github.com/AndreasBakogiannis/MCF-Toolbox.git
+    cd MCF-Toolbox
     ```
 
 2.  Install dependencies:
