@@ -10,53 +10,75 @@ import io
 # --- Helper Functions ---
 
 @st.cache_data
-def calculate_autocorrelation(y, max_lag=500):
+def fortran_autocorr(y, max_lag=500):
+    """
+    Calculates autocorrelation exactly as specified in the Fortran code provided.
+    
+    Fortran Logic:
+      barx = sum(y) / n
+      var = sum((y - barx)**2)
+      for m = 0 to 500:
+          sumc = sum( (y(i)-barx) * (y(i+m)-barx) )
+          corr(m) = sumc / var
+    """
     n = len(y)
     if n == 0: return np.zeros(max_lag+1)
     
-    # Center the data once
-    y_centered = y - np.mean(y)
-    var = np.sum(y_centered**2)
+    # 1. Calculate Mean (barx)
+    barx = np.mean(y)
+    
+    # 2. Calculate Variance term (sum2 in Fortran)
+    # Note: Fortran code calculates sum of squared differences, NOT divided by N.
+    var = np.sum((y - barx)**2)
     
     if var == 0: return np.zeros(max_lag+1)
     
-    # Compute autocorrelation
-    # We use a loop for memory efficiency and simplicity for small max_lag
-    # Optimized by pre-centering and using dot product
+    corr = []
     
-    # Cap max_lag at n-1 to avoid invalid slices or empty arrays
+    # 3. Loop for lags
+    # We use numpy vectorization for the inner loop (i) to keep Python fast,
+    # but the math is identical to the Fortran DO loops.
     effective_lag = min(max_lag, n - 1)
-    corr = np.zeros(effective_lag + 1)
     
     for m in range(effective_lag + 1):
-        # We only need to multiply the overlapping parts
-        # y[t] * y[t+m]
-        # slice 1: 0 to n-m
-        # slice 2: m to n
-        val = np.dot(y_centered[:n-m], y_centered[m:])
-        corr[m] = val
+        # Construct the shifted arrays
+        # Fortran: i goes from 1 to n-m
+        # Python: slice 0 to n-m
         
-    return corr / var
+        # term1 = y(i) - barx
+        term1 = y[:n-m] - barx
+        
+        # term2 = y(i+m) - barx
+        term2 = y[m:] - barx
+        
+        # sumc = sum(term1 * term2)
+        sumc = np.sum(term1 * term2)
+        
+        # corr(m) = sumc / var
+        corr.append(sumc / var)
+        
+    return np.array(corr)
 
 @st.cache_data
 def get_laminar_lengths(data, phi_0, phi_l):
-    # Vectorized detection of laminar regions
-    # Laminar region: phi_0 < x <= phi_l
+    """
+    Calculates laminar lengths based on the condition: phi_0 < x <= phi_l
+    Matches the logic in MCF.docx and coupled_maps.m
+    """
+    # Vectorized detection
     condition = (data > phi_0) & (data <= phi_l)
     
-    # Pad with False to ensure we catch regions at the start/end
-    # cast to int (0/1)
+    # Pad to detect edges at start/end
     padded = np.concatenate(([0], condition.astype(int), [0]))
-    
-    # Diff: 1 means 0->1 (start), -1 means 1->0 (end)
     diffs = np.diff(padded)
+    
+    # 1 indicates 0->1 (start of region), -1 indicates 1->0 (end of region)
     starts = np.where(diffs == 1)[0]
     ends = np.where(diffs == -1)[0]
     
-    # Lengths are simply end_index - start_index
     lengths = ends - starts
     
-    # Filter out zero lengths if any (shouldn't happen with logic above)
+    # Return only valid lengths > 0
     return lengths[lengths > 0]
 
 def truncated_power_law(x, p1, p2, p3):
@@ -65,25 +87,24 @@ def truncated_power_law(x, p1, p2, p3):
 @st.cache_data
 def parse_uploaded_file(file_content, filename, col_idx):
     try:
-        # Convert bytes to file-like object
         file_buffer = io.BytesIO(file_content)
         preview = None
         
         if filename.endswith('.txt'):
             raw_data = np.loadtxt(file_buffer)
         else:
-            # Try reading as CSV
             try:
+                # Attempt comma-separated
                 df = pd.read_csv(file_buffer, header=None, sep=',')
-                # Check if first row is header (strings)
+                # Check if header exists (heuristic)
                 if df.iloc[0].apply(lambda x: isinstance(x, str)).any():
                      file_buffer.seek(0)
                      df = pd.read_csv(file_buffer, sep=',')
             except:
+                # Fallback to whitespace
                 file_buffer.seek(0)
                 df = pd.read_csv(file_buffer, delim_whitespace=True, header=None)
             
-            # Extract column
             if isinstance(df, pd.DataFrame):
                 preview = df.head()
                 max_col = df.shape[1] - 1
@@ -98,17 +119,13 @@ def parse_uploaded_file(file_content, filename, col_idx):
         return None, str(e), None
 
 def render_interactive_selection(raw_data, step, key_prefix="main"):
-    """
-    Renders the interactive time series plot and manual selection inputs.
-    Updates st.session_state.sel_start/sel_end based on interaction.
-    """
+    """Renders the interactive plot with Box Select enabled."""
     
     fig_main = go.Figure()
     fig_main.add_trace(go.Scattergl(
         x=np.arange(0, len(raw_data), step), 
         y=raw_data[::step],
-        mode='lines+markers', 
-        marker=dict(size=2, color='#007bff'),
+        mode='lines', 
         line=dict(color='#007bff', width=1), 
         name='Raw Data'
     ))
@@ -123,62 +140,46 @@ def render_interactive_selection(raw_data, step, key_prefix="main"):
         )
 
     fig_main.update_layout(
-        title="Full Time Series",
+        title="Full Time Series (Box Select Enabled)",
         xaxis_title="Index", 
         yaxis_title="Amplitude",
         height=500 if key_prefix != "main" else 400,
         margin=dict(l=0, r=0, t=30, b=0),
         template="plotly_white",
-        dragmode='select', # Default to selection tool
-        newselection=dict(line=dict(color='red', dash='dash'))
+        dragmode='select', # Box select by default
+        modebar_remove=['lasso2d'] # Remove Lasso as requested
     )
     
-    # Use dynamic key to force remount on manual update, clearing stale plot selection state
+    # Unique key ensures plot refreshes correctly
     plot_key = f"{key_prefix}_plot_select_{st.session_state.plot_refresh_id}"
     selected_points = plotly_events(fig_main, select_event=True, key=plot_key)
     
     if selected_points:
-        # Extract X values from selected points
         xs = [p['x'] for p in selected_points]
         if xs:
             new_start = int(min(xs))
             new_end = int(max(xs))
-            # Update state if different
             if new_start != st.session_state.sel_start or new_end != st.session_state.sel_end:
                 st.session_state.sel_start = new_start
                 st.session_state.sel_end = new_end
                 st.rerun()
 
-    # Selection Controls
-    st.info("Select region using the Box Select tool on the plot OR Input Boxes below.")
+    st.info("Use the **Box Select** tool on the plot OR Input Boxes below to select range.")
     
     col_sel1, col_sel2 = st.columns(2)
-    
     with col_sel1:
-        st.number_input(
-            "Start Index", 
-            min_value=0, 
-            max_value=len(raw_data)-1, 
-            key=f'{key_prefix}_sel_start_input',
-            value=st.session_state.sel_start,
-            on_change=update_range_from_inputs,
-            kwargs={'source': 'start'} # Pass metadata if needed, but simple counter is enough
-        )
+        st.number_input("Start Index", min_value=0, max_value=len(raw_data)-1, 
+                        key=f'{key_prefix}_sel_start_input', value=st.session_state.sel_start,
+                        on_change=update_range_from_inputs)
         
     with col_sel2:
-        st.number_input(
-            "End Index", 
-            min_value=0, 
-            max_value=len(raw_data), 
-            key=f'{key_prefix}_sel_end_input',
-            value=st.session_state.sel_end,
-            on_change=update_range_from_inputs,
-            kwargs={'source': 'end'}
-        )
+        st.number_input("End Index", min_value=0, max_value=len(raw_data), 
+                        key=f'{key_prefix}_sel_end_input', value=st.session_state.sel_end,
+                        on_change=update_range_from_inputs)
 
 # --- App Layout ---
 
-st.set_page_config(page_title="MCF Toolbox (Ultimate)", layout="wide", page_icon="📈")
+st.set_page_config(page_title="MCF Toolbox (v2.6)", layout="wide", page_icon="📈")
 
 st.title("📈 Method of Critical Fluctuations (MCF) Toolbox")
 st.markdown("""
@@ -199,34 +200,18 @@ with st.sidebar:
 
 # --- Main Logic ---
 
-# Initialize session state for synchronization
 if 'sel_start' not in st.session_state: st.session_state.sel_start = 0
 if 'sel_end' not in st.session_state: st.session_state.sel_end = 0
 if 'phi_0' not in st.session_state: st.session_state.phi_0 = 0.0
 if 'plot_refresh_id' not in st.session_state: st.session_state.plot_refresh_id = 0
 
-def update_range_from_inputs(source=None):
-    # Increment refresh ID to force plot remount and clear stale selection
+def update_range_from_inputs():
     st.session_state.plot_refresh_id += 1
-    
-    # Update global state from the specific input that triggered the change
-    # Note: Streamlit updates the key in session state automatically before callback
-    # We need to sync back to the main keys if we are using prefixed keys
-    # But since we set `value=st.session_state.sel_start`, the widget is controlled?
-    # No, Streamlit widgets are tricky.
-    # If we use key='main_sel_start_input', the value is in st.session_state.main_sel_start_input
-    # We need to copy that to st.session_state.sel_start
-    
-    # We must identify which widget triggered.
-    # Iterate keys to find which one matches
     for k in st.session_state:
-        if k.endswith('_sel_start_input'):
-            st.session_state.sel_start = st.session_state[k]
-        elif k.endswith('_sel_end_input'):
-            st.session_state.sel_end = st.session_state[k]
+        if k.endswith('_sel_start_input'): st.session_state.sel_start = st.session_state[k]
+        elif k.endswith('_sel_end_input'): st.session_state.sel_end = st.session_state[k]
 
 if uploaded_file is not None:
-    # Read file content once
     file_bytes = uploaded_file.getvalue()
     raw_data, error, preview = parse_uploaded_file(file_bytes, uploaded_file.name, col_idx)
     
@@ -241,16 +226,12 @@ if uploaded_file is not None:
         # --- Section 2: Selection ---
         st.subheader("2. Select Critical Window")
         
-        # Interactive Plot for Selection
-        # Downsample for performance on plot
         step = 1 if len(raw_data) < 50000 else int(len(raw_data) / 10000)
-        
         render_interactive_selection(raw_data, step, key_prefix="main")
 
         start_val = st.session_state.sel_start
         end_val = st.session_state.sel_end
         
-        # Validation for manual input
         if st.session_state.sel_start >= st.session_state.sel_end and st.session_state.sel_end != 0:
              st.warning("Start Index must be less than End Index.")
         
@@ -264,11 +245,9 @@ if uploaded_file is not None:
             with tab1:
                 st.subheader("Critical Window Statistics")
                 
-                # Plotly Highlight
+                # Static Highlight
                 fig_high = go.Figure()
-                # Entire data (downsampled) background
                 fig_high.add_trace(go.Scattergl(x=np.arange(0, len(raw_data), step), y=raw_data[::step], mode='lines', line=dict(color='lightgray'), name='Full Data'))
-                # Selected data
                 fig_high.add_trace(go.Scattergl(x=np.arange(start_val, end_val), y=section, mode='lines', line=dict(color='red'), name='CW'))
                 fig_high.update_layout(height=300, margin=dict(l=0,r=0,t=30,b=0), title="Critical Window",xaxis_title="Index", yaxis_title="Amplitude", template="plotly_white")
                 st.plotly_chart(fig_high, use_container_width=True)
@@ -279,8 +258,6 @@ if uploaded_file is not None:
                     st.markdown("#### Rolling Statistics (Window=500)")
                     if len(section) > 500:
                         windows = np.arange(500, len(section), 500)
-                        # Vectorized rolling calculation
-                        # Original: section[:w] -> cumulative mean/std
                         means = [np.mean(section[:w]) for w in windows]
                         stds = [np.std(section[:w]) for w in windows]
                         
@@ -297,12 +274,13 @@ if uploaded_file is not None:
                 with col_s2:
                     st.markdown("#### Autocorrelation")
                     with st.spinner("Computing autocorrelation..."):
-                        corr = calculate_autocorrelation(section)
+                        # Use Fortran-style function
+                        corr = fortran_autocorr(section)
                     
                     fig_ac = go.Figure()
                     fig_ac.add_trace(go.Scatter(y=corr, mode='lines', name='Autocorr', line=dict(color='black')))
                     fig_ac.update_layout(
-                        title="Autocorrelation Function",
+                        title="Autocorrelation Function (Fortran)",
                         xaxis_title="Lag",
                         yaxis_title="C(m)/C(0)",
                         height=400,
@@ -327,10 +305,8 @@ if uploaded_file is not None:
                         bins_arg = st.number_input("Number of Bins", 5, 10000, 50)
                     elif bin_mode == "Custom Edges":
                         edges_txt = st.text_input("Edges (space separated)", "0 10 20")
-                        try: 
-                            bins_arg = sorted([float(x) for x in edges_txt.split()])
-                        except: 
-                            bins_arg = 50
+                        try: bins_arg = sorted([float(x) for x in edges_txt.split()])
+                        except: bins_arg = 50
                     
                     st.markdown("---")
                     st.markdown(r"**Critical Point ($\phi_0$)**")
@@ -339,12 +315,10 @@ if uploaded_file is not None:
                     enable_click = st.checkbox(r"Click on graph to set $\phi_0$", value=False)
 
                 with col_h2:
-                    # Prepare Data
                     data_hist = section.copy()
                     if add_noise and eps > 0:
                         data_hist += np.random.uniform(-eps, eps, len(data_hist))
                     
-                    # Histogram
                     counts, edges = np.histogram(data_hist, bins=bins_arg)
                     centers = (edges[:-1] + edges[1:]) / 2
                     
@@ -354,7 +328,6 @@ if uploaded_file is not None:
                         marker_color='#17a2b8', opacity=0.7,
                         name='Distribution'
                     ))
-                    # Add Phi_0 line
                     fig_hist.add_vline(x=st.session_state.phi_0, line_width=2, line_dash="dash", line_color="red")
                     fig_hist.add_annotation(x=st.session_state.phi_0, y=max(counts), text="φ₀", showarrow=False, yshift=10)
                     
@@ -366,7 +339,6 @@ if uploaded_file is not None:
                     )
                     
                     if enable_click:
-                        from streamlit_plotly_events import plotly_events
                         selected = plotly_events(fig_hist, click_event=True, hover_event=False)
                         if selected:
                             st.session_state.phi_0 = selected[0]['x']
@@ -398,29 +370,19 @@ if uploaded_file is not None:
                             
                             for i, phi_l in enumerate(phi_l_vals):
                                 with res_tabs[i]:
-                                    # Calculate lengths
-                                    # Reuse data_hist (with noise if selected) or use clean section?
-                                    # Usually analysis is done on data with noise if discretized.
-                                    # But let's use the one configured in Hist tab
                                     lengths = get_laminar_lengths(data_hist, st.session_state.phi_0, phi_l)
                                     
                                     if len(lengths) == 0:
                                         st.warning("No laminar regions found.")
                                         continue
                                         
-                                    # Histogram of lengths
-                                    # For power laws, we often use logarithmic binning or integer binning.
-                                    # The original code used integer bins.
                                     bins_fit = np.arange(1, np.max(lengths) + 2) - 0.5
                                     counts_l, edges_l = np.histogram(lengths, bins=bins_fit)
                                     centers_l = (edges_l[:-1] + edges_l[1:]) / 2
                                     
-                                    # Filter for fit
-                                    if lmax > 0:
-                                        mask = (counts_l > 0) & (centers_l <= lmax)
-                                    else:
-                                        mask = (counts_l > 0)
-                                        
+                                    if lmax > 0: mask = (counts_l > 0) & (centers_l <= lmax)
+                                    else: mask = (counts_l > 0)
+                                    
                                     x_fit = centers_l[mask]
                                     y_fit = counts_l[mask]
                                     
@@ -428,7 +390,6 @@ if uploaded_file is not None:
                                         st.warning("Not enough points to fit.")
                                         continue
                                     
-                                    # Fit
                                     try:
                                         p0_guess = [np.max(y_fit), 1.33, 0.01]
                                         popt, pcov = curve_fit(truncated_power_law, x_fit, y_fit,
@@ -436,7 +397,6 @@ if uploaded_file is not None:
                                         p1, p2, p3 = popt
                                         perr = np.sqrt(np.diag(pcov))
                                         
-                                        # R2
                                         residuals = y_fit - truncated_power_law(x_fit, *popt)
                                         ss_res = np.sum(residuals**2)
                                         ss_tot = np.sum((y_fit - np.mean(y_fit))**2)
@@ -444,7 +404,6 @@ if uploaded_file is not None:
                                         
                                         results.append({'phi_l': phi_l, 'p2': p2, 'p2_err': perr[1], 'p3': p3, 'p3_err': perr[2], 'R2': r2})
                                         
-                                        # Plot
                                         fig_fit = go.Figure()
                                         fig_fit.add_trace(go.Scatter(x=x_fit, y=y_fit, mode='markers', name='Data', marker=dict(color='black')))
                                         
@@ -452,25 +411,14 @@ if uploaded_file is not None:
                                         y_smooth = truncated_power_law(x_smooth, *popt)
                                         fig_fit.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines', name='Fit', line=dict(color='red')))
                                         
-                                        # Add results annotation box
-                                        result_text = (
-                                            f"p<sub>2</sub> = {p2:.2f} ± {perr[1]:.2f}<br>"
-                                            f"p<sub>3</sub> = {p3:.2f} ± {perr[2]:.2f}<br>"
-                                            f"R² = {r2:.4f}"
-                                        )
+                                        result_text = (f"p<sub>2</sub> = {p2:.2f} ± {perr[1]:.2f}<br>"
+                                                       f"p<sub>3</sub> = {p3:.2f} ± {perr[2]:.2f}<br>"
+                                                       f"R² = {r2:.4f}")
                                         
-                                        fig_fit.add_annotation(
-                                            text=result_text,
-                                            align='left',
-                                            showarrow=False,
-                                            xref='paper', yref='paper',
-                                            x=0.95, y=0.95,
-                                            xanchor='right', yanchor='top',
-                                            bordercolor='black',
-                                            borderwidth=1,
-                                            bgcolor='rgba(255, 255, 255, 0.8)',
-                                            font=dict(size=14, color="black")
-                                        )
+                                        fig_fit.add_annotation(text=result_text, align='left', showarrow=False,
+                                                               xref='paper', yref='paper', x=0.95, y=0.95,
+                                                               xanchor='right', yanchor='top', bordercolor='black', borderwidth=1,
+                                                               bgcolor='rgba(255, 255, 255, 0.8)')
 
                                         fig_fit.update_layout(
                                             title=f"Distribution of Laminar lengths (φ<sub>l</sub> = {phi_l})",
@@ -484,7 +432,6 @@ if uploaded_file is not None:
                                     except Exception as e:
                                         st.error(f"Fit failed: {e}")
 
-                            # Summary Plot
                             if len(results) > 0:
                                 res_df = pd.DataFrame(results)
                                 st.divider()
